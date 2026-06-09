@@ -69,6 +69,14 @@ function buildPython(tool: Tool, params: ToolParams, b64: string): string {
       'from reportlab.pdfbase.ttfonts import TTFont',
       'import io',
       '',
+      '# Register a Cyrillic-capable font (font bytes injected from JS)',
+      'FONT_NAME = "EmbeddedSans"',
+      'try:',
+      '    _font_bytes = _b64e.b64decode(FONT_B64)',
+      '    pdfmetrics.registerFont(TTFont(FONT_NAME, io.BytesIO(_font_bytes)))',
+      'except Exception as _e:',
+      '    FONT_NAME = "Helvetica"',
+      '',
       'find_text = _b64e.b64decode("' + findB64 + '").decode("utf-8")',
       'replace_text_val = _b64e.b64decode("' + replaceB64 + '").decode("utf-8")',
       '',
@@ -102,7 +110,7 @@ function buildPython(tool: Tool, params: ToolParams, b64: string): string {
       '            replaced_count += 1',
       '            # Real width of the OLD text being covered',
       '            try:',
-      '                old_w = pdfmetrics.stringWidth(text, "Helvetica", fsize)',
+      '                old_w = pdfmetrics.stringWidth(text, FONT_NAME, fsize)',
       '            except Exception:',
       '                old_w = len(text) * fsize * 0.5',
       '            # Cover the old text precisely (small padding)',
@@ -111,14 +119,14 @@ function buildPython(tool: Tool, params: ToolParams, b64: string): string {
       '            # Shrink new text to fit the same horizontal space',
       '            draw_size = fsize',
       '            try:',
-      '                new_w = pdfmetrics.stringWidth(new_text, "Helvetica", draw_size)',
+      '                new_w = pdfmetrics.stringWidth(new_text, FONT_NAME, draw_size)',
       '                while new_w > old_w and draw_size > 4:',
       '                    draw_size -= 0.5',
-      '                    new_w = pdfmetrics.stringWidth(new_text, "Helvetica", draw_size)',
+      '                    new_w = pdfmetrics.stringWidth(new_text, FONT_NAME, draw_size)',
       '            except Exception:',
       '                pass',
       "            c.setFillColor(HexColor('#000000'))",
-      '            c.setFont("Helvetica", draw_size)',
+      '            c.setFont(FONT_NAME, draw_size)',
       '            c.drawString(x, y, new_text)',
       '        c.save()',
       '        buf.seek(0)',
@@ -316,6 +324,7 @@ export default function PDFEditor() {
   const [resultBlob, setResultBlob] = useState<Blob | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const fontB64Ref = useRef<string | null>(null)
 
   const loadFile = useCallback((file: File) => {
     if (file.type !== 'application/pdf') return
@@ -356,6 +365,23 @@ export default function PDFEditor() {
       }
 
       const py = window._pyodide
+
+      // For text replacement we need a Cyrillic-capable font; fetch & cache once
+      if (activeTool === 'replace_text') {
+        if (!fontB64Ref.current) {
+          setStatus({ type: 'loading', msg: 'Загружаю шрифт...' })
+          const fontResp = await fetch('https://cdn.jsdelivr.net/npm/dejavu-fonts-ttf@2.37.3/ttf/DejaVuSans.ttf')
+          if (!fontResp.ok) throw new Error('Не удалось загрузить шрифт')
+          const fontBuf = await fontResp.arrayBuffer()
+          let binary = ''
+          const fontBytes = new Uint8Array(fontBuf)
+          for (let i = 0; i < fontBytes.length; i++) binary += String.fromCharCode(fontBytes[i])
+          fontB64Ref.current = btoa(binary)
+        }
+        await py.runPythonAsync(`FONT_B64 = "${fontB64Ref.current}"`)
+        setStatus({ type: 'loading', msg: 'Обработка...' })
+      }
+
       let stdout = ''
       py.setStdout({ batched: (s: string) => { stdout += s + '\n' } })
       py.setStderr({ batched: (s: string) => { stdout += s + '\n' } })
